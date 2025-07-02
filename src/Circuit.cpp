@@ -5,6 +5,8 @@
 #include <numeric>
 #include <algorithm>
 #include <queue>
+#include <random>
+#include <cmath>
 
 // Main method to orchestrate the entire SCOAP calculation process.
 void Circuit::calculateAllScoapMetrics() {
@@ -454,4 +456,129 @@ void Circuit::printNetsToFile(const std::string& filepath) const {
         ofs << "  CO: " << (net.co == INF ? -1 : net.co) << ", SO: " << (net.so == INF ? -1 : net.so) << "\n\n";
     }
     std::cout << "Wrote net info to " << filepath << std::endl;
+}
+
+// Writes SCOAP results to a CSV file
+void Circuit::writeScoapResultsToCSV(const std::string& filepath) const {
+    std::ofstream ofs(filepath);
+    if (!ofs) {
+        std::cerr << "Error opening file: " << filepath << std::endl;
+        return;
+    }
+    ofs << "Net,CC0,CC1,SC0,SC1,CO,SO\n";
+    for (const auto& pair : nets) {
+        const Net& net = pair.second;
+        ofs << net.name << ","
+            << (net.cc0 == INF ? -1 : net.cc0) << ","
+            << (net.cc1 == INF ? -1 : net.cc1) << ","
+            << (net.sc0 == INF ? -1 : net.sc0) << ","
+            << (net.sc1 == INF ? -1 : net.sc1) << ","
+            << (net.co == INF ? -1 : net.co) << ","
+            << (net.so == INF ? -1 : net.so) << "\n";
+    }
+    std::cout << "Wrote SCOAP results to " << filepath << std::endl;
+}
+
+// Helper: Euclidean distance between two points in 6D
+static double scoap_distance(const std::vector<int>& a, const std::vector<int>& b) {
+    double sum = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
+        sum += diff * diff;
+    }
+    return std::sqrt(sum);
+}
+
+// KMeans clustering on SCOAP metrics (CC0, CC1, SC0, SC1, CO, SO)
+void Circuit::runKMeansOnScoap(const std::string& outputFile, int k) const {
+    // Gather feature vectors (skip nets with -1/INF values)
+    std::vector<std::string> net_names;
+    std::vector<std::vector<int>> features;
+    for (const auto& pair : nets) {
+        const Net& net = pair.second;
+        if (net.cc0 == INF || net.cc1 == INF || net.sc0 == INF || net.sc1 == INF || net.co == INF || net.so == INF)
+            continue;
+        features.push_back({net.cc0, net.cc1, net.sc0, net.sc1, net.co, net.so});
+        net_names.push_back(net.name);
+    }
+    if (features.size() < static_cast<size_t>(k)) {
+        std::cerr << "Not enough nets for KMeans clustering." << std::endl;
+        return;
+    }
+    // KMeans++ initialization
+    std::vector<std::vector<int>> centroids;
+    std::vector<int> chosen;
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<size_t> uni(0, features.size() - 1);
+    centroids.push_back(features[uni(rng)]);
+    for (int c = 1; c < k; ++c) {
+        std::vector<double> dists(features.size(), 1e9);
+        for (size_t i = 0; i < features.size(); ++i) {
+            for (const auto& centroid : centroids) {
+                double d = scoap_distance(features[i], centroid);
+                if (d < dists[i]) dists[i] = d;
+            }
+        }
+        double sum = 0.0;
+        for (double d : dists) sum += d;
+        std::uniform_real_distribution<double> dist(0, sum);
+        double r = dist(rng);
+        double acc = 0.0;
+        size_t next = 0;
+        for (size_t i = 0; i < dists.size(); ++i) {
+            acc += dists[i];
+            if (acc >= r) { next = i; break; }
+        }
+        centroids.push_back(features[next]);
+    }
+    // KMeans iterations
+    std::vector<int> assignments(features.size(), -1);
+    for (int iter = 0; iter < 100; ++iter) {
+        // Assignment step
+        bool changed = false;
+        for (size_t i = 0; i < features.size(); ++i) {
+            double best_dist = 1e9;
+            int best_c = -1;
+            for (int c = 0; c < k; ++c) {
+                double d = scoap_distance(features[i], centroids[c]);
+                if (d < best_dist) {
+                    best_dist = d;
+                    best_c = c;
+                }
+            }
+            if (assignments[i] != best_c) {
+                assignments[i] = best_c;
+                changed = true;
+            }
+        }
+        // Update step
+        std::vector<std::vector<double>> new_centroids(k, std::vector<double>(6, 0.0));
+        std::vector<int> counts(k, 0);
+        for (size_t i = 0; i < features.size(); ++i) {
+            int c = assignments[i];
+            for (int j = 0; j < 6; ++j) new_centroids[c][j] += features[i][j];
+            counts[c]++;
+        }
+        for (int c = 0; c < k; ++c) {
+            if (counts[c] == 0) continue;
+            for (int j = 0; j < 6; ++j) new_centroids[c][j] /= counts[c];
+        }
+        for (int c = 0; c < k; ++c) {
+            for (int j = 0; j < 6; ++j) centroids[c][j] = static_cast<int>(std::round(new_centroids[c][j]));
+        }
+        if (!changed) break;
+    }
+    // Write results
+    std::ofstream ofs(outputFile);
+    if (!ofs) {
+        std::cerr << "Error opening file: " << outputFile << std::endl;
+        return;
+    }
+    ofs << "Net,Cluster,CC0,CC1,SC0,SC1,CO,SO\n";
+    for (size_t i = 0; i < net_names.size(); ++i) {
+        ofs << net_names[i] << "," << assignments[i];
+        for (int v : features[i]) ofs << "," << v;
+        ofs << "\n";
+    }
+    std::cout << "Wrote KMeans clustering results to " << outputFile << std::endl;
 }

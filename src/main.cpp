@@ -2,6 +2,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include "Circuit.h"
+#include <filesystem>
 
 namespace VerilogParser {
 
@@ -138,3 +140,27 @@ void parseFile(
 }
 
 } // namespace VerilogParser
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <verilog_file>" << std::endl;
+        return 1;
+    }
+    std::string verilogFile = argv[1];
+    std::string outputDir = "output";
+    std::filesystem::create_directory(outputDir);
+    std::string scoapCsv = outputDir + "/scoap_results.csv";
+    std::string kmeansCsv = outputDir + "/kmeans_results.csv";
+
+    Circuit circuit;
+    if (!circuit.loadFromVerilog(verilogFile)) {
+        std::cerr << "Failed to parse Verilog file." << std::endl;
+        return 1;
+    }
+    circuit.calculateAllScoapMetrics();
+    circuit.writeScoapResultsToCSV(scoapCsv);
+    circuit.runKMeansOnScoap(kmeansCsv, 3);
+    circuit.printDebugInfo(outputDir);
+    std::cout << "Analysis complete. Results in '" << outputDir << "'." << std::endl;
+    return 0;
+}

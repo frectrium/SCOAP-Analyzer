@@ -19,6 +19,10 @@ public:
     // Public accessors
     const std::map<std::string, Net>& getNets() const { return nets; }
 
+    // New methods
+    void writeScoapResultsToCSV(const std::string& filepath) const;
+    void runKMeansOnScoap(const std::string& outputFile, int k = 3) const;
+
 private:
     // Circuit elements
     std::vector<Gate> gates;
